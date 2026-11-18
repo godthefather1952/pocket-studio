@@ -1,0 +1,77 @@
+name: Build iOS app (unsigned IPA)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select latest Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build (no code signing — AltStore signs it on your phone)
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project PocketStudio.xcodeproj \
+            -scheme PocketStudio \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            -skipPackagePluginValidation \
+            -skipMacroValidation \
+            CURRENT_PROJECT_VERSION=${{ github.run_number }} \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build | tee xcodebuild.log | grep -E "error:|warning: unre|BUILD (SUCCEEDED|FAILED)" || true
+          test -d build/Build/Products/Release-iphoneos/PocketStudio.app
+
+      - name: Package IPA
+        run: |
+          mkdir -p Payload
+          cp -R build/Build/Products/Release-iphoneos/PocketStudio.app Payload/
+          zip -qry PocketStudio.ipa Payload
+          ls -lh PocketStudio.ipa
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-log
+          path: xcodebuild.log
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PocketStudio-ipa
+          path: PocketStudio.ipa
+
+      - name: Publish release (easy download from iPhone Safari)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: Pocket Studio build ${{ github.run_number }}
+          body: |
+            Unsigned IPA for sideloading with AltStore / SideStore.
+            On your iPhone: tap **PocketStudio.ipa** below → Download → open AltStore → My Apps → **+** → pick the file.
+          files: PocketStudio.ipa
+          make_latest: true
